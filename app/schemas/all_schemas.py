@@ -10,7 +10,7 @@ from app.models.booking import BookingStatus
 class UserRegister(BaseModel):
     fullName: str = Field(..., min_length=2)
     email: EmailStr
-    password: str = Field(..., min_length=6)
+    password: str = Field(..., min_length=8,max_length=72)
     role: Role = Role.USER
     phone: Optional[str] = None
     businessName: Optional[str] = None
