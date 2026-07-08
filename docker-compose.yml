@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: endlesspath_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  web:
+    build: .
+    container_name: endlesspath_web
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - JWT_SECRET=6f9c2e8b4a1d7c5e9f3b8a2d6c1e7f4b9d3a6c8e1f5b7a2d9c4e6f1b3a8d5c7
+      - PORT=5000
+    depends_on:
+      - db
+
+volumes:
+  postgres_data:
