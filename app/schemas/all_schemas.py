@@ -23,9 +23,16 @@ class UserLogin(BaseModel):
     email: str
     password: str
 
-class VerifyOtp(BaseModel):
-    email: str
-    otp: str
+class FirebaseLoginRequest(BaseModel):
+    idToken: str
+    fullName: Optional[str] = None
+    role: Optional[Role] = Role.USER
+    phone: Optional[str] = None
+    businessName: Optional[str] = None
+    bankAccountName: Optional[str] = None
+    bankAccountNumber: Optional[str] = None
+    bankIFSC: Optional[str] = None
+    bankName: Optional[str] = None
 
 class RefreshTokenRequest(BaseModel):
     refreshToken: str
@@ -79,6 +86,7 @@ class BookingCreate(BaseModel):
     notes: Optional[str] = None
     paymentMethod: Optional[str] = "COD"
     idempotencyKey: Optional[str] = None
+    isInstant: Optional[bool] = False
 
 class ConfirmPaymentRequest(BaseModel):
     bookingId: str

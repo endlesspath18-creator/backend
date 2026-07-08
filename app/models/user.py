@@ -15,7 +15,7 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     fullName: Mapped[str] = mapped_column(String(255), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
     phone: Mapped[str | None] = mapped_column(String(50), unique=True, nullable=True)
     passwordHash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[Role] = mapped_column(SQLEnum(Role), default=Role.USER, nullable=False)
@@ -24,14 +24,14 @@ class User(Base):
     isActive: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     profileImage: Mapped[str | None] = mapped_column(String(500), nullable=True)
     createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     hasPaidPublishingFee: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     canPublishService: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     isVerified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     
     isEmailVerified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     isPhoneVerified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    verificationCode: Mapped[str | None] = mapped_column(String(6), nullable=True)
-    otpExpiry: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    firebaseUid: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
 
     # Relationships
     providerProfile = relationship("ProviderProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")

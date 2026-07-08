@@ -94,6 +94,7 @@ async def create_booking(
         durationMinutes=service.durationMinutes,
         paymentMethod=method,
         paymentStatus="PENDING",
+        isInstant=payload.isInstant,
         holdExpiresAt=hold_expiry,
         idempotencyKey=payload.idempotencyKey
     )

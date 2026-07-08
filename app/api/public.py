@@ -7,9 +7,29 @@ from app.database.session import get_db
 from app.models.user import User, Role
 from app.models.provider import ProviderProfile
 from app.models.extra import Banner
+from app.models.category import Category
 from app.utils.response import success_response, error_response
 
 router = APIRouter(prefix="/public", tags=["Public"])
+
+@router.get("/categories")
+async def get_categories(db: AsyncSession = Depends(get_db)):
+    stmt = select(Category).where(Category.isActive == True).order_by(Category.title.asc())
+    res = await db.execute(stmt)
+    categories = res.scalars().all()
+    
+    categories_list = []
+    for c in categories:
+        categories_list.append({
+            "id": c.id,
+            "title": c.title,
+            "description": c.description,
+            "image": c.image,
+            "icon": c.icon,
+            "isActive": c.isActive
+        })
+    return success_response("Categories fetched successfully", data=categories_list)
+
 
 @router.get("/banners")
 async def get_public_banners(db: AsyncSession = Depends(get_db)):

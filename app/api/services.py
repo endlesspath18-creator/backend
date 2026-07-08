@@ -48,12 +48,19 @@ async def get_services(
         filters.append(Service.category == category)
         
     if searchQuery:
-        filters.append(
-            or_(
-                Service.title.ilike(f"%{searchQuery}%"),
-                Service.description.ilike(f"%{searchQuery}%")
-            )
-        )
+        search_terms = searchQuery.split()
+        keyword_filters = [
+            Service.title.ilike(f"%{searchQuery}%"),
+            Service.category.ilike(f"%{searchQuery}%"),
+            Service.description.ilike(f"%{searchQuery}%")
+        ]
+        for term in search_terms:
+            if len(term) >= 2:
+                term_filter = f"%{term}%"
+                keyword_filters.append(Service.title.ilike(term_filter))
+                keyword_filters.append(Service.category.ilike(term_filter))
+                keyword_filters.append(Service.description.ilike(term_filter))
+        filters.append(or_(*keyword_filters))
         
     query = (
         select(Service)

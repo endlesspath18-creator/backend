@@ -41,6 +41,7 @@ class Booking(Base):
     durationMinutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
     paymentMethod: Mapped[str] = mapped_column(String(50), default="COD", nullable=False)
     paymentStatus: Mapped[str] = mapped_column(String(50), default="PENDING", nullable=False)
+    isInstant: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     paymentId: Mapped[str | None] = mapped_column(String(255), nullable=True)
     orderId: Mapped[str | None] = mapped_column(String(255), nullable=True)
     holdExpiresAt: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

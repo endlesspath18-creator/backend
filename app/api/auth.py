@@ -10,8 +10,10 @@ from app.core.security import hash_password, verify_password, create_access_toke
 from app.models.user import User, Role
 from app.models.provider import ProviderProfile
 from app.models.extra import RefreshToken
-from app.schemas.all_schemas import UserRegister, UserLogin, VerifyOtp, RefreshTokenRequest, ChangePassword, UpdateProfile
+from app.schemas.all_schemas import UserRegister, UserLogin, FirebaseLoginRequest, RefreshTokenRequest, ChangePassword, UpdateProfile
 from app.utils.response import success_response, error_response
+from app.core.firebase import verify_firebase_token
+from fastapi.responses import JSONResponse
 from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -40,48 +42,217 @@ async def generate_and_save_tokens(user_id: str, role: str, db: AsyncSession):
     return access_token, refresh_token
 
 
+@router.post("/firebase-login")
+async def firebase_login(payload: FirebaseLoginRequest, db: AsyncSession = Depends(get_db)):
+    # 1. Verify Firebase ID Token
+    decoded_token = verify_firebase_token(payload.idToken)
+    
+    # 2. Extract Claims
+    uid = decoded_token.get("uid")
+    phone_number = decoded_token.get("phone_number") or payload.phone
+    email = decoded_token.get("email")
+    name = decoded_token.get("name") or (email.split("@")[0] if email else "Firebase User")
+    picture = decoded_token.get("picture")
+    
+    if not uid:
+        return error_response("Invalid Firebase token: missing uid claim.", status_code=400)
+        
+    firebase_info = decoded_token.get("firebase", {})
+    sign_in_provider = firebase_info.get("sign_in_provider")
+    
+    if sign_in_provider == "phone" and not phone_number:
+        return error_response("Authentication failed: phone number is missing from token.", status_code=400)
+    elif sign_in_provider != "phone" and not email:
+        return error_response("Authentication failed: email is missing from token.", status_code=400)
+    elif not phone_number and not email:
+        return error_response("Authentication failed: token must contain phone number or email.", status_code=400)
+        
+    # 3. Search database for user by firebaseUid
+    query = select(User).where(User.firebaseUid == uid)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        # Search by phone or email to link existing accounts
+        conditions = []
+        if phone_number:
+            conditions.append(User.phone == phone_number)
+        if email:
+            conditions.append(User.email == email.lower().strip())
+            
+        if conditions:
+            query_exist = select(User).where(or_(*conditions))
+            result_exist = await db.execute(query_exist)
+            user = result_exist.scalar_one_or_none()
+            
+            if user:
+                # Link existing user account
+                user.firebaseUid = uid
+                if phone_number:
+                    user.phone = phone_number
+                    user.isPhoneVerified = True
+                if email:
+                    user.email = email.lower().strip()
+                    user.isEmailVerified = True
+                if picture and not user.profileImage:
+                    user.profileImage = picture
+                user.isActive = True
+                db.add(user)
+                await db.commit()
+                await db.refresh(user)
+                print(f"[AUTH] Linked existing user {user.id} to firebaseUid {uid}")
+                
+    if not user:
+        # Create a new user
+        user_name = payload.fullName or name or (phone_number if phone_number else "New User")
+        user_role = payload.role or Role.USER
+        user_email = email.lower().strip() if email else None
+        
+        # Verify uniqueness of email or phone in database if present
+        uniqueness_checks = []
+        if user_email:
+            uniqueness_checks.append(User.email == user_email)
+        if phone_number:
+            uniqueness_checks.append(User.phone == phone_number)
+            
+        if uniqueness_checks:
+            query_unique = select(User).where(or_(*uniqueness_checks))
+            result_unique = await db.execute(query_unique)
+            clashing_user = result_unique.scalar_one_or_none()
+            if clashing_user:
+                if not clashing_user.firebaseUid:
+                    clashing_user.firebaseUid = uid
+                    if phone_number:
+                        clashing_user.phone = phone_number
+                        clashing_user.isPhoneVerified = True
+                    if user_email:
+                        clashing_user.email = user_email
+                        clashing_user.isEmailVerified = True
+                    clashing_user.isActive = True
+                    db.add(clashing_user)
+                    await db.commit()
+                    await db.refresh(clashing_user)
+                    user = clashing_user
+                else:
+                    return error_response("An account with this phone or email already exists.", status_code=400)
+        
+        if not user:
+            new_user = User(
+                firebaseUid=uid,
+                fullName=user_name,
+                email=user_email,
+                phone=phone_number,
+                role=user_role,
+                isActive=True,
+                isPhoneVerified=True if phone_number else False,
+                isEmailVerified=True if email else False,
+                profileImage=picture
+            )
+            db.add(new_user)
+            await db.commit()
+            await db.refresh(new_user)
+            user = new_user
+            print(f"[AUTH] Created new user {user.id} with firebaseUid {uid}")
+            
+            # Create provider profile if role is PROVIDER
+            if user_role == Role.PROVIDER:
+                provider_profile = ProviderProfile(
+                    userId=user.id,
+                    businessName=payload.businessName or user_name,
+                    bankAccountName=payload.bankAccountName,
+                    bankAccountNumber=payload.bankAccountNumber,
+                    bankIFSC=payload.bankIFSC,
+                    bankName=payload.bankName
+                )
+                db.add(provider_profile)
+                await db.commit()
+
+    # 4. Generate backend access and refresh tokens
+    access_token, refresh_token = await generate_and_save_tokens(user.id, user.role.value, db)
+    
+    # 5. Fetch provider profile details if applicable
+    provider_dict = None
+    if user.role == Role.PROVIDER:
+        result_profile = await db.execute(
+            select(ProviderProfile).where(ProviderProfile.userId == user.id)
+        )
+        profile = result_profile.scalar_one_or_none()
+        if profile:
+            provider_dict = {
+                "id": profile.id,
+                "userId": profile.userId,
+                "businessName": profile.businessName,
+                "bio": profile.bio,
+                "experienceYears": profile.experienceYears,
+                "rating": profile.rating,
+                "totalJobs": profile.totalJobs,
+                "isOnline": profile.isOnline,
+                "bankName": profile.bankName,
+                "bankAccountName": profile.bankAccountName,
+                "bankAccountNumber": profile.bankAccountNumber,
+                "bankIFSC": profile.bankIFSC
+            }
+
+    # 6. Format response
+    user_data = {
+        "id": user.id,
+        "fullName": user.fullName,
+        "email": user.email or "",
+        "phone": user.phone or "",
+        "role": user.role.value,
+        "isRoleSet": user.isRoleSet,
+        "hasPaidPublishingFee": user.hasPaidPublishingFee,
+        "canPublishService": user.canPublishService,
+        "profileImage": user.profileImage,
+        "providerProfile": provider_dict
+    }
+    
+    return JSONResponse(
+        content={
+            "success": True,
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "user": user_data
+        },
+        status_code=200
+    )
+
+
+
+
 @router.post("/register")
 async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
-    email_normalized = payload.email.lower().strip()
+    email_clean = payload.email.lower().strip()
     
-    # Check uniqueness
-    query = select(User).where(
-        or_(
-            User.email == email_normalized,
-            *( [User.phone == payload.phone] if payload.phone else [] )
-        )
-    )
-    result = await db.execute(query)
-    existing_user = result.scalar_one_or_none()
+    # 1. Uniqueness check
+    conditions = [User.email == email_clean]
+    if payload.phone:
+        conditions.append(User.phone == payload.phone.strip())
+        
+    query_exist = select(User).where(or_(*conditions))
+    result_exist = await db.execute(query_exist)
+    existing_user = result_exist.scalar_one_or_none()
+    
     if existing_user:
-        return error_response("User already exists with this email or phone number.", status_code=400)
-    
-    # Hash password
-    print("Password:", payload.password)
-    print("Length:", len(payload.password))
-    print("Type:", type(payload.password))
-    pwd_hash = hash_password(payload.password)
-    
-    # OTP details
-    otp = str(random.randint(100000, 999999))
-    otp_expiry = datetime.utcnow() + timedelta(minutes=15)
-    
-    # Create user
+        return error_response("An account with this email or phone number already exists.", status_code=400)
+        
+    # 2. Create the user
     new_user = User(
         fullName=payload.fullName,
-        email=email_normalized,
-        phone=payload.phone,
-        passwordHash=pwd_hash,
+        email=email_clean,
+        phone=payload.phone.strip() if payload.phone else None,
+        passwordHash=hash_password(payload.password),
         role=payload.role,
-        isActive=False, # Verify OTP first
-        verificationCode=otp,
-        otpExpiry=otp_expiry
+        isActive=True,
+        isEmailVerified=True,
+        isPhoneVerified=True if payload.phone else False
     )
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
     
-    # Create provider profile if role is PROVIDER
+    # 3. Create provider profile if role is PROVIDER
+    provider_dict = None
     if payload.role == Role.PROVIDER:
         provider_profile = ProviderProfile(
             userId=new_user.id,
@@ -93,65 +264,47 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
         )
         db.add(provider_profile)
         await db.commit()
+        await db.refresh(provider_profile)
         
-    print(f"[AUTH] OTP for {email_normalized}: {otp}")
+        provider_dict = {
+            "id": provider_profile.id,
+            "userId": provider_profile.userId,
+            "businessName": provider_profile.businessName,
+            "bio": provider_profile.bio,
+            "experienceYears": provider_profile.experienceYears,
+            "rating": provider_profile.rating,
+            "totalJobs": provider_profile.totalJobs,
+            "isOnline": provider_profile.isOnline,
+            "bankName": provider_profile.bankName,
+            "bankAccountName": provider_profile.bankAccountName,
+            "bankAccountNumber": provider_profile.bankAccountNumber,
+            "bankIFSC": provider_profile.bankIFSC
+        }
+        
+    # 4. Generate tokens
+    access_token, refresh_token = await generate_and_save_tokens(new_user.id, new_user.role.value, db)
     
-    return success_response(
-        "Registration successful. Please verify your account.",
-        data={
-            "userId": new_user.id,
-            "email": new_user.email,
-            "phone": new_user.phone,
-            "debugOtp": otp
+    user_data = {
+        "id": new_user.id,
+        "fullName": new_user.fullName,
+        "email": new_user.email,
+        "phone": new_user.phone or "",
+        "role": new_user.role.value,
+        "isRoleSet": new_user.isRoleSet,
+        "hasPaidPublishingFee": new_user.hasPaidPublishingFee,
+        "canPublishService": new_user.canPublishService,
+        "profileImage": new_user.profileImage,
+        "providerProfile": provider_dict
+    }
+    
+    return JSONResponse(
+        content={
+            "success": True,
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "user": user_data
         },
         status_code=201
-    )
-
-
-@router.post("/verify-otp")
-async def verify_otp(payload: VerifyOtp, db: AsyncSession = Depends(get_db)):
-    email_normalized = payload.email.lower().strip()
-    result = await db.execute(
-        select(User).where(User.email == email_normalized)
-    )
-    user = result.scalar_one_or_none()
-    if not user:
-        return error_response("User not found.", status_code=404)
-        
-    if user.isActive:
-        return error_response("Account is already active.", status_code=400)
-        
-    if user.verificationCode != payload.otp:
-        return error_response("Invalid verification code.", status_code=400)
-        
-    if user.otpExpiry and user.otpExpiry < datetime.utcnow():
-        return error_response("Verification code has expired.", status_code=400)
-        
-    # Mark verified & active
-    user.isActive = True
-    user.isEmailVerified = True
-    user.isPhoneVerified = True
-    user.verificationCode = None
-    user.otpExpiry = None
-    db.add(user)
-    await db.commit()
-    
-    # Create tokens
-    access_token, refresh_token = await generate_and_save_tokens(user.id, user.role.value, db)
-    
-    return success_response(
-        "Account verified successfully",
-        data={
-            "token": access_token,
-            "refreshToken": refresh_token,
-            "user": {
-                "id": user.id,
-                "fullName": user.fullName,
-                "email": user.email,
-                "role": user.role.value,
-                "isRoleSet": user.isRoleSet
-            }
-        }
     )
 
 

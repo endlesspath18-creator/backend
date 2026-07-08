@@ -81,8 +81,39 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+import threading
+import asyncio
+
+def run_migrations_and_seed():
+    import os
+    try:
+        from alembic.config import Config
+        from alembic import command
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ini_path = os.path.join(base_dir, "alembic.ini")
+        print(f"[STARTUP] Running database migrations from {ini_path}...")
+        cfg = Config(ini_path)
+        command.upgrade(cfg, "head")
+        print("[STARTUP] Database migrations completed successfully.")
+        
+        # Run seed
+        from app.database.seed import seed_categories
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(seed_categories())
+        finally:
+            loop.close()
+    except Exception as e:
+        print(f"[STARTUP] Background migrations/seed failed: {e}")
+
+@app.on_event("startup")
+async def startup_event():
+    threading.Thread(target=run_migrations_and_seed, daemon=True).start()
+
 # --- Register API Routers ---
 API_PREFIX = "/api"
+
 
 app.include_router(auth.router, prefix=API_PREFIX)
 app.include_router(services.router, prefix=API_PREFIX)
