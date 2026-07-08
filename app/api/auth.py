@@ -57,6 +57,9 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
         return error_response("User already exists with this email or phone number.", status_code=400)
     
     # Hash password
+    print("Password:", payload.password)
+    print("Length:", len(payload.password))
+    print("Type:", type(payload.password))
     pwd_hash = hash_password(payload.password)
     
     # OTP details
